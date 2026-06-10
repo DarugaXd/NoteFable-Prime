@@ -1,0 +1,6 @@
+{
+  "name": "SlateNotes",
+  "description": "A secure personal notes organizer themed in slate dark and matching the Obsidian visual guidelines.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
