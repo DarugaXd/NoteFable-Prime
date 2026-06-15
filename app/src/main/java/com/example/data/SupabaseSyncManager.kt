@@ -1,6 +1,10 @@
 package com.example.data
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,7 +51,49 @@ object SupabaseSyncManager {
     fun initialize(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         isSimulatedOffline.value = prefs.getBoolean(KEY_SIMULATE_OFFLINE, false)
-        isOnline.value = !isSimulatedOffline.value
+        
+        try {
+            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            if (connectivityManager != null) {
+                val networkRequest = NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build()
+                
+                val activeNetwork = connectivityManager.activeNetwork
+                val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
+                val hasInternet = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                
+                isOnline.value = hasInternet && !isSimulatedOffline.value
+                if (isSimulatedOffline.value) {
+                    syncStatusMessage.value = "Offline Mode Active"
+                } else {
+                    syncStatusMessage.value = if (hasInternet) "Synced & Online" else "Saved Locally (Offline)"
+                }
+
+                connectivityManager.registerNetworkCallback(networkRequest, object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        if (!isSimulatedOffline.value) {
+                            isOnline.value = true
+                            syncStatusMessage.value = "Synced & Online"
+                        }
+                    }
+
+                    override fun onLost(network: Network) {
+                        isOnline.value = false
+                        if (!isSimulatedOffline.value) {
+                            syncStatusMessage.value = "Saved Locally (Offline)"
+                        }
+                    }
+                })
+            } else {
+                isOnline.value = !isSimulatedOffline.value
+                syncStatusMessage.value = if (isSimulatedOffline.value) "Offline Mode Active" else "Synced & Online"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register network capabilities/connectivity listener", e)
+            isOnline.value = !isSimulatedOffline.value
+            syncStatusMessage.value = if (isSimulatedOffline.value) "Offline Mode Active" else "Synced & Online"
+        }
     }
 
     fun getSupabaseUrl(context: Context): String {
@@ -71,17 +117,23 @@ object SupabaseSyncManager {
 
     fun setSimulateOffline(context: Context, offline: Boolean) {
         isSimulatedOffline.value = offline
-        isOnline.value = !offline
         
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putBoolean(KEY_SIMULATE_OFFLINE, offline)
             .apply()
 
         if (offline) {
+            isOnline.value = false
             disconnectRealtime()
             syncStatusMessage.value = "Offline Mode Active"
         } else {
-            syncStatusMessage.value = "Synced & Online"
+            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val activeNetwork = connectivityManager?.activeNetwork
+            val capabilities = connectivityManager?.getNetworkCapabilities(activeNetwork)
+            val hasInternet = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+            
+            isOnline.value = hasInternet
+            syncStatusMessage.value = if (hasInternet) "Synced & Online" else "Saved Locally (Offline)"
             reconnectRealtime(context)
         }
     }

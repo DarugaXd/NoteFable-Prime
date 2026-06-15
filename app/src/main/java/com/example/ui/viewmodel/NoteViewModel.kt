@@ -21,6 +21,15 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
         // Initialize the Supabase offline sync states
         com.example.data.SupabaseSyncManager.initialize(application)
         
+        // Auto-re-sync: Listen for connection state and push all locally modified notes up to Supabase when coming online
+        viewModelScope.launch {
+            com.example.data.SupabaseSyncManager.isOnline.collect { online ->
+                if (online) {
+                    syncOfflineQueue()
+                }
+            }
+        }
+        
         // Push any leftover pending changes on startup
         syncOfflineQueue()
     }
@@ -95,8 +104,8 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
 
     fun insertOrUpdateNote(note: Note, onComplete: ((Long) -> Unit)? = null) {
         viewModelScope.launch {
-            val isOffline = com.example.data.SupabaseSyncManager.isSimulatedOffline.value
-            val cleanState = if (isOffline) "PENDING_SYNC" else "SYNCED"
+            val isOffline = !com.example.data.SupabaseSyncManager.isOnline.value
+            val cleanState = "PENDING_SYNC" // Always save locally first to guarantee fast write & offline cache first
             val updated = note.copy(
                 syncState = cleanState,
                 updatedAt = System.currentTimeMillis()
@@ -107,6 +116,9 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
             if (!isOffline) {
                 val broadcastNote = if (updated.id <= 0) updated.copy(id = id.toInt()) else updated
                 com.example.data.SupabaseSyncManager.broadcastNoteEdit(getApplication(), broadcastNote)
+                
+                // Trigger background cloud sync immediately to push updates
+                syncOfflineQueue()
             }
             
             onComplete?.invoke(id)
@@ -266,5 +278,9 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
+    }
+
+    suspend fun getNoteById(id: Int): Note? {
+        return repository.getNoteById(id)
     }
 }

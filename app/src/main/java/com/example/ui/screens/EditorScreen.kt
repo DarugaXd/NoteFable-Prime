@@ -52,6 +52,9 @@ import com.example.ui.theme.*
 import com.example.ui.util.RichTextParser
 import com.example.ui.viewmodel.NoteViewModel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 
 @Composable
 fun EditorScreen(
@@ -67,10 +70,14 @@ fun EditorScreen(
     var note by remember { mutableStateOf<Note?>(null) }
     LaunchedEffect(noteId) {
         if (noteId != null) {
-            val fetched = viewModel.parseChecklist(null) // Mock check
             val existing = viewModel.activeNotes.value.find { it.id == noteId }
                 ?: viewModel.trashedNotes.value.find { it.id == noteId }
-            note = existing ?: Note(title = "", content = "", category = "Personal")
+            if (existing != null) {
+                note = existing
+            } else {
+                val dbNote = viewModel.getNoteById(noteId)
+                note = dbNote ?: Note(title = "", content = "", category = "Personal")
+            }
         } else {
             note = Note(title = "", content = "", category = "Personal")
         }
@@ -198,6 +205,12 @@ fun EditorScreen(
         }
     }
 
+    LaunchedEffect(title, contentValue.text, category, isPinned, reminderDate, checklistItems, imageItems, pdfNames) {
+        // Debounce typed edits slightly (300ms) to write to local Room database immediately while typing without performance stuttering
+        delay(300)
+        saveNote()
+    }
+
     DisposableEffect(title, contentValue.text, category, isPinned, reminderDate, checklistItems, imageItems, pdfNames) {
         onDispose {
             saveNote()
@@ -224,7 +237,7 @@ fun EditorScreen(
                         onBackClick()
                     }) {
                         Icon(
-                            imageVector = Icons.Default.ArrowBack,
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Return to Dashboard",
                             tint = MaterialTheme.colorScheme.onSurface
                         )
@@ -386,15 +399,25 @@ fun EditorScreen(
                         fontWeight = FontWeight.Medium
                     )
 
+                    val syncIcon = if (isOnlineState) Icons.Default.CloudQueue else Icons.Default.CloudQueue // or CloudQueue/CloudOff
+                    val syncText = if (isOnlineState) "Synced" else "Saved Locally (Offline)"
+                    val syncColor = if (isOnlineState) ElectricBlue else Color(0xFFF59E0B)
+
                     Button(
-                        onClick = { saveNote() },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = ElectricBlue),
+                        onClick = { 
+                            if (isOnlineState) {
+                                viewModel.syncOfflineQueue()
+                            } else {
+                                saveNote()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = syncColor),
                         contentPadding = PaddingValues(0.dp),
-                        modifier = Modifier.height(28.dp)
+                        modifier = Modifier.height(28.dp).testTag("editor_sync_indicator")
                     ) {
-                        Icon(imageVector = Icons.Default.CloudQueue, contentDescription = "Sync State", modifier = Modifier.size(16.dp))
+                        Icon(imageVector = syncIcon, contentDescription = "Sync State", modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Synced to Supabase", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        Text(syncText, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -1117,14 +1140,14 @@ fun PdfEmbeddedView(
                         onClick = { if (pdfPage > 1) pdfPage-- },
                         modifier = Modifier.size(32.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
                     ) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Page backwards", modifier = Modifier.size(16.dp))
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Page backwards", modifier = Modifier.size(16.dp))
                     }
                     Text("$pdfPage of $maxPages", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
                     IconButton(
                         onClick = { if (pdfPage < maxPages) pdfPage++ },
                         modifier = Modifier.size(32.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
                     ) {
-                        Icon(Icons.Default.ArrowForward, contentDescription = "Page forwards", modifier = Modifier.size(16.dp))
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Page forwards", modifier = Modifier.size(16.dp))
                     }
                 }
 
@@ -2168,7 +2191,7 @@ fun PdfViewerDialog(
                                 .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.ArrowBack,
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "Page backwards",
                                 modifier = Modifier.size(16.dp)
                             )
@@ -2186,27 +2209,104 @@ fun PdfViewerDialog(
                                 .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.ArrowForward,
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                                 contentDescription = "Page forwards",
                                 modifier = Modifier.size(16.dp)
                             )
                         }
                     }
 
-                    Button(
-                        onClick = onDismiss,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ElectricBlue,
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.height(36.dp)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("Done", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        val context = LocalContext.current
+                        OutlinedButton(
+                            onClick = { openPdfInExternalApp(context, pdfName) },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.onSurface
+                            ),
+                            modifier = Modifier.height(36.dp)
+                        ) {
+                            Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Open Ext", fontSize = 12.sp)
+                        }
+
+                        Button(
+                            onClick = onDismiss,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ElectricBlue,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.height(36.dp)
+                        ) {
+                            Text("Done", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+private fun openPdfInExternalApp(context: Context, pdfName: String) {
+    try {
+        val pdfDocument = android.graphics.pdf.PdfDocument()
+        val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(595, 842, 1).create()
+        val page = pdfDocument.startPage(pageInfo)
+        val canvas = page.canvas
+        val paint = android.graphics.Paint().apply {
+            textSize = 14f
+            color = android.graphics.Color.BLACK
+        }
+        
+        canvas.drawText("SlateNotes PDF Document Viewer", 50f, 50f, paint)
+        canvas.drawText("Document Name: $pdfName", 50f, 80f, paint)
+        canvas.drawText("Disclaimer: Handled securely via Local File Container", 50f, 110f, paint)
+        
+        val text = when (pdfName) {
+            "HarmonyOS_Next_Architecture.pdf" -> "SECTION 1.0 — HarmonyOS Next & ArkUI Native Core\nThis technical guide details the transition from traditional Android APIs to pure ArkTS and ArkUI controls. We configure direct microkernel pipelines optimizing layout inflation schedules, achieving 60fps rendering pipelines under high load stress."
+            "Supabase_Storage_Specification.pdf" -> "SECTION 1.0 — Global Bucket Partitioning\nAll documents and scanned images are placed on edge servers closer to the user to keep retrieval latency low. Access controls employ JSON Web Tokens (JWT) generated directly from local authentication states."
+            "Receipts_June_2026.pdf" -> "TRANSACTION RECORD: 2026-06-05\nSupabase Storage Hosting S1 (Professional Tier): $15.00 USD\nPayment Method: VISA **** 1290\nBilling Reference: TXN-817293-SUP\nStatus: PAID AND COMPLETED"
+            else -> "SECTION 1.0 — CUSTOM DOCUMENT VIEW\nDocument name: $pdfName\nFile descriptor: local://documents/cache/$pdfName"
+        }
+        
+        var yShift = 160f
+        for (line in text.split("\n")) {
+            canvas.drawText(line, 50f, yShift, paint)
+            yShift += 24f
+        }
+        
+        pdfDocument.finishPage(page)
+        
+        val file = java.io.File(context.cacheDir, pdfName)
+        val outputStream = java.io.FileOutputStream(file)
+        pdfDocument.writeTo(outputStream)
+        outputStream.flush()
+        outputStream.close()
+        pdfDocument.close()
+        
+        val fileUri = androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(fileUri, "application/pdf")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        
+        val chooser = Intent.createChooser(intent, "Open PDF with...")
+        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(chooser)
+    } catch (e: Exception) {
+        e.printStackTrace()
+        android.widget.Toast.makeText(context, "Error opening external PDF: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
     }
 }
 
